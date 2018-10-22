@@ -13,6 +13,7 @@
 
 #define MAX_CONNECTIONS     10
 #define MAX_CONSEC_FAILS    10
+#define HEADER_PADDING      1000
 #define MAX_MSG_SIZE        64000
 
 char* serverErrorMsg = { "HTTP/1.1 500 Internal Server Error" };
@@ -31,7 +32,6 @@ int main(int argc , char *argv[])
     int                     socket_desc, client_sock, c, *new_sock;
     struct sockaddr_in      server, client;
     pthread_t               connectionThreads[MAX_CONNECTIONS];
-    // byte                    message[MAX_MSG_SIZE];
     char                    message[MAX_MSG_SIZE], client_message[MAX_MSG_SIZE];
 
     if(argc < 2) {
@@ -62,11 +62,10 @@ int main(int argc , char *argv[])
     printf("Bind succeeded.\n");
      
     //Listen
-    listen(socket_desc , 3);
+    listen(socket_desc, 3);
      
     //Accept and incoming connection
     printf("Waiting for incoming connections...\n");
-    cConsecFails = 0;
 
     struct TConnectionInformation ci;
     ci.cConnections = 0;
@@ -79,16 +78,8 @@ int main(int argc , char *argv[])
         client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
 
         // Check if connection correctly established
-        if (client_sock < 0) {
-            if(cConsecFails < MAX_CONSEC_FAILS) {
-                printf("Accept failed. Trying again\n");
-                ++cConsecFails;
-                continue;
-            } else {
-                printf("Fail limit reached, aborting.\n");
-                break;
-            }
-        }
+        if (client_sock < 0)
+            break;
 
         // Success, reset consecutive failures
         cConsecFails = 0;
@@ -167,7 +158,7 @@ void *connectionHandler(void *connectionInfo) {
             memcpy(fileType, "application/javascript", 22);
         }
 
-        printf("%s\n", fileName);
+        printf("Requested file: %s\n", fileName);
 
         // Attempt to open the file with read only priveledges
         int fd = open( fileName + 1 , 'r');
@@ -176,29 +167,34 @@ void *connectionHandler(void *connectionInfo) {
         if (fd < 0) {
             // Print client error message
             printf("File open failed! File: %s\n", fileName);
-            // Send file error signal to server
-
+            
             printf("\nSERVER ERROR MESSAGE\n%s\n\n", serverErrorMsg);
+            // Send file error signal to server
             write(sock, serverErrorMsg, strlen(serverErrorMsg));
+            // ??? idk why i continue
             continue;
         }
 
+        // Seek to end of file to get file size
         int fileSize = lseek(fd, 0, SEEK_END);
+        printf("File size: %d\n", fileSize);
+        // Reset file pointer to start of file
         lseek(fd, 0, SEEK_SET);
 
-        char returnMessage[MAX_MSG_SIZE];
-        sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", fileType, fileSize);
-        int headerLength = strlen(returnMessage);
-
+        // Loop while reading from file
         int sizeRead = 0;
         while( ( sizeRead = read(fd, message, MAX_MSG_SIZE) ) > 0 ) { 
-            printf("Sending n bytes: %d\n", sizeRead);
-            memcpy((returnMessage + headerLength), message, fileSize);
+            // Put the header at the start of returnMessage
+            char returnMessage[MAX_MSG_SIZE];
+            sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", fileType, sizeRead);
+            int headerLength = strlen(returnMessage);
             
-            // sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: 34466\r\n\r\n%s", fileType, message);
+            printf("Sending n bytes: %d\n", sizeRead);
+            memcpy((returnMessage + headerLength), message, sizeRead);
+
             //Send the message back to client
             printf("\nRETURN MESSAGE\n\n%s\n", returnMessage);
-            write(sock, returnMessage, (headerLength + fileSize) );
+            write(sock, returnMessage, (headerLength + sizeRead) );
         }
         close(fd);
 
@@ -213,9 +209,8 @@ void *connectionHandler(void *connectionInfo) {
         printf("Client disconnected. Current connections: %d\n", ci->cConnections);
         fflush(stdout);
     } else if(read_size == -1) {
-        printf("recv failed\n");
+        printf("RECV FAILED\n");
     }
-     
-    printf("peace\n");
+
     return 0;
 }
