@@ -1,33 +1,16 @@
-/*
-    C socket server example, handles multiple clients using threads
-*/
- 
-#include <stdio.h>
-#include <string.h>    //strlen
-#include <stdlib.h>    //strlen
-#include <sys/socket.h>
-#include <arpa/inet.h> //inet_addr
-#include <unistd.h>    //write
-#include <pthread.h> //for threading , link with lpthread
-#include <fcntl.h>
+/********************************
+ * Walker Schmidt
+ * CSCI 4273: Network Systems
+ * Programming Assignment #2
+ ********************************/
 
-#define MAX_CONNECTIONS     10
-#define MAX_CONSEC_FAILS    10
-#define HEADER_PADDING      1000
-#define MAX_MSG_SIZE        64000
+#include "globals.h"
+#include "getrequest.h"
 
-char* serverErrorMsg = { "HTTP/1.1 500 Internal Server Error" };
- 
-//the thread function
-void *connectionHandler(void *);
-
-struct TConnectionInformation {
-    int *ciClientSock;
-    int cConnections;
-};
- 
-int main(int argc , char *argv[])
-{
+/************************************************
+ *                MAIN FUNCTION                 *
+ ***********************************************/
+int main(int argc , char *argv[]) {
     int                     port, cConnections, cConsecFails;
     int                     socket_desc, client_sock, c, *new_sock;
     struct sockaddr_in      server, client;
@@ -39,7 +22,7 @@ int main(int argc , char *argv[])
     }
     port = atoi(argv[1]);
      
-    //Create socket
+    // Create socket
     socket_desc = socket(AF_INET , SOCK_STREAM , 0);
     if (socket_desc == -1)
     {
@@ -47,12 +30,12 @@ int main(int argc , char *argv[])
     }
     printf("Socket created.\n");
      
-    //Prepare the sockaddr_in structure
+    // Prepare the sockaddr_in structure
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = INADDR_ANY;
     server.sin_port = htons( port );
      
-    //Bind
+    // Bind
     if( bind(socket_desc,(struct sockaddr *)&server , sizeof(server)) < 0)
     {
         //print the error message
@@ -68,7 +51,8 @@ int main(int argc , char *argv[])
     printf("Waiting for incoming connections...\n");
 
     struct TConnectionInformation ci;
-    ci.cConnections = 0;
+    ci.cConnections = &cConnections;
+    cConnections = 0;
 
     // Accept incoming connections
     while( 1 ) {
@@ -90,15 +74,16 @@ int main(int argc , char *argv[])
         ci.ciClientSock = new_sock;
          
         // Launch a new thread for the connection we just created
-        if( pthread_create(&connectionThreads[ci.cConnections], NULL, connectionHandler, (void*)&ci) < 0 ) {
+        if( pthread_create(&connectionThreads[*ci.cConnections], NULL, connectionHandler, (void*)&ci) < 0 ) {
             printf("Could not create thread.\n");
             return 1;
         }
 
-        int curConnections = ci.cConnections;
+        // Lockless multi-threaded programming :)
+        int curConnections = *ci.cConnections;
         int newConnections = curConnections + 1;
-        __sync_val_compare_and_swap(&(ci.cConnections), curConnections, newConnections);
-        printf("Connection accepted. Current connections: %d\n", ci.cConnections);
+        __sync_val_compare_and_swap(ci.cConnections, curConnections, newConnections);
+        printf("Connection accepted. Current connections: %d\n", *ci.cConnections);
     }
 
     /// wait all threads by joining them
@@ -108,107 +93,36 @@ int main(int argc , char *argv[])
      
     return 0;
 }
- 
-/*
- * This will handle connection for each client
- * */
+
+/************************************************
+ *          CONNECTION HANDLER THREAD           *
+ ***********************************************/
 void *connectionHandler(void *connectionInfo) {
     struct TConnectionInformation* ci = connectionInfo;
 
     //Get the socket descriptor
     int sock = *(int*)(ci->ciClientSock);
+    char client_message[MAX_MSG_SIZE];
     int read_size;
-    char message[MAX_MSG_SIZE], client_message[MAX_MSG_SIZE];
+    // char message[MAX_MSG_SIZE], client_message[MAX_MSG_SIZE];
 
     //Receive a message from client
     while( (read_size = recv(sock, client_message, MAX_MSG_SIZE, 0)) > 0 ) {
         printf("RECIEVED %d bytes\n", read_size);
-        int fileNameLen = 0;
-        char* fileName;
         printf("%s\n", client_message);
         if(0 == memcmp(client_message, "GET", 3)) {
-            fileName = client_message + 4;
-            for(int tmpLen = 0; tmpLen < MAX_MSG_SIZE; ++tmpLen) {
-                if(fileName[tmpLen] == ' ') {
-                    fileName[tmpLen] = '\0';
-                    fileNameLen = tmpLen;
-                    tmpLen = MAX_MSG_SIZE;
-                }
-            }
+            GetRequest(sock, client_message);
         }
-
-        if( (0 == memcmp(fileName, "/", 1)) && ( (0 == memcmp(fileName+1, " ", 1)) || (0 == memcmp(fileName+1, "\0", 1)) || (0 == memcmp(fileName+1, "\n", 1)) ) )  {
-            fileName = "/index.html";
-        }
-
-        char fileType[50];
-        if( (0 == memcmp((fileName+(strlen(fileName) - 5)), ".html", 5)) ) {
-            memcpy(fileType, "text/html", 9);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 4)), ".txt", 4))) {
-            memcpy(fileType, "text/plain", 10);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 4)), ".png", 4))) {
-            memcpy(fileType, "image/png", 9);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 4)), ".gif", 4))) {
-            memcpy(fileType, "image/gif", 9);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 4)), ".jpg", 4))) {
-            memcpy(fileType, "image/jpg", 9);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 4)), ".css", 4))) {
-            memcpy(fileType, "text/css", 8);
-        } else if((0 == memcmp((fileName+(strlen(fileName) - 3)), ".js", 3))) {
-            memcpy(fileType, "application/javascript", 22);
-        }
-
-        printf("Requested file: %s\n", fileName);
-
-        // Attempt to open the file with read only priveledges
-        int fd = open( fileName + 1 , 'r');
-    
-        // if the file descriptor is less than 0, the file was not opened successfully
-        if (fd < 0) {
-            // Print client error message
-            printf("File open failed! File: %s\n", fileName);
-            
-            printf("\nSERVER ERROR MESSAGE\n%s\n\n", serverErrorMsg);
-            // Send file error signal to server
-            write(sock, serverErrorMsg, strlen(serverErrorMsg));
-            // ??? idk why i continue
-            continue;
-        }
-
-        // Seek to end of file to get file size
-        int fileSize = lseek(fd, 0, SEEK_END);
-        printf("File size: %d\n", fileSize);
-        // Reset file pointer to start of file
-        lseek(fd, 0, SEEK_SET);
-
-        // Loop while reading from file
-        int sizeRead = 0;
-        while( ( sizeRead = read(fd, message, MAX_MSG_SIZE) ) > 0 ) { 
-            // Put the header at the start of returnMessage
-            char returnMessage[MAX_MSG_SIZE];
-            sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", fileType, sizeRead);
-            int headerLength = strlen(returnMessage);
-            
-            printf("Sending n bytes: %d\n", sizeRead);
-            memcpy((returnMessage + headerLength), message, sizeRead);
-
-            //Send the message back to client
-            printf("\nRETURN MESSAGE\n\n%s\n", returnMessage);
-            write(sock, returnMessage, (headerLength + sizeRead) );
-        }
-        close(fd);
-
-        memset(message, 0, MAX_MSG_SIZE);
-        memset(fileType, 0, 50);
     }
      
     if(read_size == 0) {
-        int curConnections = (ci->cConnections);
+        // Lockless multi-threaded programming :)
+        int curConnections = *(ci->cConnections);
         int newConnections = curConnections - 1;
-        __sync_val_compare_and_swap(&(ci->cConnections), curConnections, newConnections);
-        printf("Client disconnected. Current connections: %d\n", ci->cConnections);
-        fflush(stdout);
+        __sync_val_compare_and_swap((ci->cConnections), curConnections, newConnections);
+        printf("Client disconnected. Current connections: %d\n", *ci->cConnections);
     } else if(read_size == -1) {
+        // Recieving data failed
         printf("RECV FAILED\n");
     }
 
