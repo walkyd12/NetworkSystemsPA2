@@ -170,7 +170,7 @@ void *connectionHandler(void *connectionInfo) {
         printf("%s\n", fileName);
 
         // Attempt to open the file with read only priveledges
-        int fd = open( (fileName + 1) , 'r');
+        int fd = open( fileName + 1 , 'r');
     
         // if the file descriptor is less than 0, the file was not opened successfully
         if (fd < 0) {
@@ -183,15 +183,22 @@ void *connectionHandler(void *connectionInfo) {
             continue;
         }
 
-        int sizeRead = 0;
-        while ((sizeRead = read(fd, message, MAX_MSG_SIZE)) > 0) {
-            printf("Sending n bytes: %d\n", sizeRead);
+        int fileSize = lseek(fd, 0, SEEK_END);
+        lseek(fd, 0, SEEK_SET);
 
-            char returnMessage[MAX_MSG_SIZE];
-            sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: %lu\r\n\r\n%s", fileType, strlen(message), message);
+        char returnMessage[MAX_MSG_SIZE];
+        sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", fileType, fileSize);
+        int headerLength = strlen(returnMessage);
+
+        int sizeRead = 0;
+        while( ( sizeRead = read(fd, message, MAX_MSG_SIZE) ) > 0 ) { 
+            printf("Sending n bytes: %d\n", sizeRead);
+            memcpy((returnMessage + headerLength), message, fileSize);
+            
+            // sprintf(returnMessage, "HTTP/1.1 200 Document Follows\r\nContent-Type: %s\r\nContent-Length: 34466\r\n\r\n%s", fileType, message);
             //Send the message back to client
             printf("\nRETURN MESSAGE\n\n%s\n", returnMessage);
-            write(sock, returnMessage, strlen(returnMessage));
+            write(sock, returnMessage, (headerLength + fileSize) );
         }
         close(fd);
 
